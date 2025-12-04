@@ -1,0 +1,5 @@
+name: "astrbot_plugin_splitter"
+version: "1.0.0"
+author: "nuomicici"
+desc: "LLM 输出自动分段发送插件"
+url: "https://github.com/nuomicici/astrbot_plugin_splitter"
