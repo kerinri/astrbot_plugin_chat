@@ -1,0 +1,17 @@
+{
+  "split_regex": {
+    "description": "用于分段的正则表达式。默认为双换行符。",
+    "type": "string",
+    "default": "\\n\\s*\\n"
+  },
+  "delay": {
+    "description": "每条分段消息发送的间隔时间（秒）。",
+    "type": "float",
+    "default": 1.0
+  },
+  "enable_on_llm_only": {
+    "description": "是否仅对 LLM 响应生效（需配合工作流或特定标识，当前建议对长文本开启）。目前逻辑为对所有超长待发送消息生效。",
+    "type": "bool",
+    "default": true
+  }
+}
