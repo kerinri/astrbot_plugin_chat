@@ -50,7 +50,7 @@ class MessageSplitterPlugin(Star):
         max_segs = self.config.get("max_segments", 7)
 
         # 3. 获取组件策略配置
-        # 策略选项: '跟随下段', '跟随上一段文字', '单独', '嵌入'
+        # 策略选项: '跟随下段', '跟随上段', '单独', '嵌入'
         strategies = {
             'image': self.config.get("image_strategy", "单独"),
             'at': self.config.get("at_strategy", "跟随下段"),
@@ -184,7 +184,7 @@ class MessageSplitterPlugin(Star):
                     # 2. 提交组件本身为一段
                     segments.append([component])
                     
-                elif strategy == "跟随上一段文字":
+                elif strategy == "跟随上段":
                     # 策略：跟随上文
                     if current_chain_buffer:
                         # 如果缓冲区有内容，直接追加
