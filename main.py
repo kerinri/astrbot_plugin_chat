@@ -10,7 +10,7 @@ from astrbot.api import AstrBotConfig, logger
 from astrbot.api.provider import LLMResponse
 from astrbot.api.message_components import Plain, BaseMessageComponent, Image, At, Face
 
-@register("message_splitter", "YourName", "智能消息分段插件", "1.3.0")
+@register("message_splitter", "YourName", "智能消息分段插件", "1.4.0")
 class MessageSplitterPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -50,17 +50,19 @@ class MessageSplitterPlugin(Star):
         max_segs = self.config.get("max_segments", 7)
 
         # 3. 获取组件策略配置
+        # 回复引用开关
+        enable_reply = self.config.get("enable_reply", True)
+
         # 策略选项: '跟随下段', '跟随上段', '单独', '嵌入'
         strategies = {
             'image': self.config.get("image_strategy", "单独"),
             'at': self.config.get("at_strategy", "跟随下段"),
             'face': self.config.get("face_strategy", "嵌入"),
-            'reply': self.config.get("reply_strategy", "单独"),
             'default': self.config.get("other_media_strategy", "跟随下段")
         }
 
         # 4. 执行分段
-        segments = self.split_chain_smart(result.chain, split_pattern, smart_mode, strategies)
+        segments = self.split_chain_smart(result.chain, split_pattern, smart_mode, strategies, enable_reply)
 
         # 5. 最大分段数限制
         if len(segments) > max_segs and max_segs > 0:
@@ -148,7 +150,7 @@ class MessageSplitterPlugin(Star):
         else: # fixed
             return self.config.get("fixed_delay", 1.5)
 
-    def split_chain_smart(self, chain: List[BaseMessageComponent], pattern: str, smart_mode: bool, strategies: Dict[str, str]) -> List[List[BaseMessageComponent]]:
+    def split_chain_smart(self, chain: List[BaseMessageComponent], pattern: str, smart_mode: bool, strategies: Dict[str, str], enable_reply: bool) -> List[List[BaseMessageComponent]]:
         segments = []
         current_chain_buffer = []
 
@@ -168,11 +170,18 @@ class MessageSplitterPlugin(Star):
                 # 获取组件类型名称 (转小写匹配配置)
                 c_type = type(component).__name__.lower()
                 
+                # 特殊处理 Reply (引用)
+                if 'reply' in c_type:
+                    if enable_reply:
+                        # 如果开启引用，将其加入当前缓冲（通常位于消息最前端）
+                        current_chain_buffer.append(component)
+                    # 如果关闭引用，直接 continue (丢弃)
+                    continue
+
                 # 映射到具体的策略键
                 if 'image' in c_type: strategy = strategies['image']
                 elif 'at' in c_type: strategy = strategies['at']
                 elif 'face' in c_type: strategy = strategies['face']
-                elif 'reply' in c_type: strategy = strategies['reply']
                 else: strategy = strategies['default']
 
                 if strategy == "单独":
