@@ -33,6 +33,13 @@
     "type": "bool",
     "default": true
   },
+  {
+  "enable_reply": {
+    "description": "是否保留回复引用。",
+    "hint": "开启后，如果 LLM 的回复包含引用（Reply），将保留在第一段消息中；关闭则移除引用。",
+    "type": "bool",
+    "default": true
+  },
   "image_strategy": {
     "description": "图片组件的分段策略。",
     "hint": "单独: 单独一条消息; 跟随下段: 跟随下一段文字; 跟随上段: 跟随上一段文字; 嵌入: 视为普通字符嵌入。",
@@ -51,13 +58,7 @@
     "type": "string",
     "options": ["单独", "跟随下段", "跟随上段", "嵌入"],
     "default": "嵌入"
-  },
-  "reply_strategy": {
-    "description": "回复引用(Reply)组件的分段策略。",
-    "type": "string",
-    "options": ["单独", "跟随下段", "跟随上段", "嵌入"],
-    "default": "单独"
-  },
+  }
   "other_media_strategy": {
     "description": "其他未知组件的分段策略。",
     "type": "string",
