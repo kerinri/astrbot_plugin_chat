@@ -2,14 +2,15 @@ import re
 import math
 import random
 import asyncio
-from typing import List
+from typing import List, Dict
 
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, register
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.provider import LLMResponse
-from astrbot.api.message_components import Plain, BaseMessageComponent
+from astrbot.api.message_components import Plain, BaseMessageComponent, Image, At, Face
 
+@register("message_splitter", "YourName", "智能消息分段插件", "1.3.0")
 class MessageSplitterPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -36,56 +37,69 @@ class MessageSplitterPlugin(Star):
         if not result or not result.chain:
             return
 
-        # 2. 获取配置
-        split_pattern = self.config.get("split_regex", r"[。？！?!\\n…]+")
+        # 2. 获取基础配置
+        split_mode = self.config.get("split_mode", "regex")
+        if split_mode == "simple":
+            split_chars = self.config.get("split_chars", "。？！?!；;\n")
+            split_pattern = f"[{re.escape(split_chars)}]+"
+        else:
+            split_pattern = self.config.get("split_regex", r"[。？！?!\\n…]+")
+
         clean_pattern = self.config.get("clean_regex", "")
         smart_mode = self.config.get("enable_smart_split", True)
         max_segs = self.config.get("max_segments", 7)
 
-        # 3. 执行分段
-        segments = self.split_chain_smart(result.chain, split_pattern, smart_mode)
+        # 3. 获取组件策略配置
+        # 策略选项: 'follow_next', 'follow_prev', 'alone', 'ignore'
+        strategies = {
+            'image': self.config.get("image_strategy", "alone"),
+            'at': self.config.get("at_strategy", "follow_next"),
+            'face': self.config.get("face_strategy", "ignore"),
+            'reply': self.config.get("reply_strategy", "alone"),
+            'default': self.config.get("other_media_strategy", "follow_next")
+        }
 
-        # 4. 最大分段数限制逻辑
-        # 如果分段数超过限制，将超出的部分全部合并到第 max_segs 段中
+        # 4. 执行分段
+        segments = self.split_chain_smart(result.chain, split_pattern, smart_mode, strategies)
+
+        # 5. 最大分段数限制
         if len(segments) > max_segs and max_segs > 0:
             logger.warning(f"[Splitter] 分段数({len(segments)}) 超过限制({max_segs})，正在合并剩余段落。")
             merged_last_segment = []
-            # 保留前 max_segs - 1 段
             trimmed_segments = segments[:max_segs-1]
-            # 合并剩余所有段
             for seg in segments[max_segs-1:]:
                 merged_last_segment.extend(seg)
-            
             trimmed_segments.append(merged_last_segment)
             segments = trimmed_segments
 
-        # 如果只有一段，且不需要清理，则直接放行
+        # 如果只有一段且不需要清理，直接放行
         if len(segments) <= 1 and not clean_pattern:
             return
 
         logger.info(f"[Splitter] 将发送 {len(segments)} 个分段。")
 
-        # 5. 逐段处理与发送
+        # 6. 逐段处理与发送
         for i, segment_chain in enumerate(segments):
             if not segment_chain:
                 continue
 
-            # 应用清理正则 (在发送前清理)
+            # 应用清理正则
             if clean_pattern:
                 for comp in segment_chain:
                     if isinstance(comp, Plain) and comp.text:
-                        # 替换掉匹配的内容
                         comp.text = re.sub(clean_pattern, "", comp.text)
 
-            # 提取纯文本用于日志和延迟计算
+            # 预览与日志
+            preview_text = self._get_chain_preview(segment_chain)
             text_content = "".join([c.text for c in segment_chain if isinstance(c, Plain)])
             
-            # 如果清理后文本为空（且只有文本组件），则跳过发送
-            is_only_text = all(isinstance(c, Plain) for c in segment_chain)
-            if is_only_text and not text_content:
+            # 空内容检查
+            is_empty_text = not text_content
+            has_other_components = any(not isinstance(c, Plain) for c in segment_chain)
+            if is_empty_text and not has_other_components:
                 continue
 
-            logger.info(f"[Splitter] 发送第 {i+1}/{len(segments)} 段: 已分段文本：{text_content}")
+            logger.info(f"[Splitter] 发送第 {i+1}/{len(segments)} 段: {preview_text}")
 
             try:
                 mc = MessageChain()
@@ -100,12 +114,21 @@ class MessageSplitterPlugin(Star):
             except Exception as e:
                 logger.error(f"[Splitter] 发送分段失败: {e}")
 
-        # 6. 清空原始链
+        # 7. 清空原始链
         result.chain.clear()
 
+    def _get_chain_preview(self, chain: List[BaseMessageComponent]) -> str:
+        parts = []
+        for comp in chain:
+            if isinstance(comp, Plain):
+                t = comp.text.replace('\n', '\\n')
+                parts.append(f"\"{t[:10]}...\"" if len(t) > 10 else f"\"{t}\"")
+            else:
+                parts.append(f"[{type(comp).__name__}]")
+        return " ".join(parts)
+
     def calculate_delay(self, text: str) -> float:
-        """根据策略计算延迟时间"""
-        strategy = self.config.get("delay_strategy", "log")
+        strategy = self.config.get("delay_strategy", "linear")
         
         if strategy == "random":
             mn = self.config.get("random_min", 1.0)
@@ -115,31 +138,70 @@ class MessageSplitterPlugin(Star):
         elif strategy == "log":
             base = self.config.get("log_base", 0.5)
             factor = self.config.get("log_factor", 0.8)
-            length = len(text)
-            delay = base + factor * math.log(length + 1)
-            return min(delay, 5.0) 
+            return min(base + factor * math.log(len(text) + 1), 5.0)
+            
+        elif strategy == "linear":
+            base = self.config.get("linear_base", 0.5)
+            factor = self.config.get("linear_factor", 0.1)
+            return base + (len(text) * factor)
             
         else: # fixed
             return self.config.get("fixed_delay", 1.5)
 
-    def split_chain_smart(self, chain: List[BaseMessageComponent], pattern: str, smart_mode: bool) -> List[List[BaseMessageComponent]]:
+    def split_chain_smart(self, chain: List[BaseMessageComponent], pattern: str, smart_mode: bool, strategies: Dict[str, str]) -> List[List[BaseMessageComponent]]:
         segments = []
         current_chain_buffer = []
 
         for component in chain:
-            if not isinstance(component, Plain):
-                current_chain_buffer.append(component)
-                continue
-
-            text = component.text
-            if not text:
-                continue
-
-            if not smart_mode:
-                self._process_text_simple(text, pattern, segments, current_chain_buffer)
+            # --- 文本组件处理 ---
+            if isinstance(component, Plain):
+                text = component.text
+                if not text: continue
+                
+                if not smart_mode:
+                    self._process_text_simple(text, pattern, segments, current_chain_buffer)
+                else:
+                    self._process_text_smart(text, pattern, segments, current_chain_buffer)
+            
+            # --- 富媒体组件处理 ---
             else:
-                self._process_text_smart(text, pattern, segments, current_chain_buffer)
+                # 获取组件类型名称 (转小写匹配配置)
+                c_type = type(component).__name__.lower()
+                
+                # 映射到具体的策略键
+                if 'image' in c_type: strategy = strategies['image']
+                elif 'at' in c_type: strategy = strategies['at']
+                elif 'face' in c_type: strategy = strategies['face']
+                elif 'reply' in c_type: strategy = strategies['reply']
+                else: strategy = strategies['default']
 
+                if strategy == "alone":
+                    # 策略：单独成段
+                    # 1. 提交当前缓冲区
+                    if current_chain_buffer:
+                        segments.append(current_chain_buffer[:])
+                        current_chain_buffer.clear()
+                    # 2. 提交组件本身为一段
+                    segments.append([component])
+                    
+                elif strategy == "follow_prev":
+                    # 策略：跟随上文
+                    if current_chain_buffer:
+                        # 如果缓冲区有内容，直接追加
+                        current_chain_buffer.append(component)
+                    elif segments:
+                        # 如果缓冲区为空，但有前一段，追加到前一段末尾
+                        segments[-1].append(component)
+                    else:
+                        # 如果既无缓冲也无前段（消息开头），只能放入缓冲
+                        current_chain_buffer.append(component)
+                        
+                else: 
+                    # 策略：follow_next (跟随下文) 或 ignore (嵌入)
+                    # 逻辑上都是放入当前缓冲区，等待后续内容或作为新段落开头
+                    current_chain_buffer.append(component)
+
+        # 处理剩余的 buffer
         if current_chain_buffer:
             segments.append(current_chain_buffer)
 
@@ -172,34 +234,27 @@ class MessageSplitterPlugin(Star):
             char = text[i]
             is_opener = char in self.pair_map
             
-            # 处理引号特殊情况
             if char in ['"', "'"]:
                 if stack and stack[-1] == char:
                     stack.pop()
                     current_chunk += char
-                    i += 1
-                    continue
+                    i += 1; continue
                 else:
                     stack.append(char)
                     current_chunk += char
-                    i += 1
-                    continue
+                    i += 1; continue
             
             if stack:
                 expected_closer = self.pair_map.get(stack[-1])
-                if char == expected_closer:
-                    stack.pop()
-                elif is_opener:
-                    stack.append(char)
+                if char == expected_closer: stack.pop()
+                elif is_opener: stack.append(char)
                 current_chunk += char
-                i += 1
-                continue
+                i += 1; continue
             
             if is_opener:
                 stack.append(char)
                 current_chunk += char
-                i += 1
-                continue
+                i += 1; continue
 
             match = compiled_pattern.match(text, pos=i)
             if match:
