@@ -8,9 +8,9 @@ from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, register
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.provider import LLMResponse
-from astrbot.api.message_components import Plain, BaseMessageComponent, Image, At, Face
+from astrbot.api.message_components import Plain, BaseMessageComponent, Image, At, Face, Reply
 
-@register("message_splitter", "YourName", "智能消息分段插件", "1.4.0")
+@register("message_splitter", "YourName", "智能消息分段插件", "1.5.0")
 class MessageSplitterPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -50,7 +50,6 @@ class MessageSplitterPlugin(Star):
         max_segs = self.config.get("max_segments", 7)
 
         # 3. 获取组件策略配置
-        # 回复引用开关
         enable_reply = self.config.get("enable_reply", True)
 
         # 策略选项: '跟随下段', '跟随上段', '单独', '嵌入'
@@ -62,6 +61,7 @@ class MessageSplitterPlugin(Star):
         }
 
         # 4. 执行分段
+        # 注意：此时 result.chain 中通常不包含 Reply 组件，因为框架还没加
         segments = self.split_chain_smart(result.chain, split_pattern, smart_mode, strategies, enable_reply)
 
         # 5. 最大分段数限制
@@ -74,13 +74,23 @@ class MessageSplitterPlugin(Star):
             trimmed_segments.append(merged_last_segment)
             segments = trimmed_segments
 
-        # 如果只有一段且不需要清理，直接放行
+        # 如果只有一段且不需要清理，直接放行 (让框架去处理 Reply)
         if len(segments) <= 1 and not clean_pattern:
             return
 
+        # 6. 手动注入 Reply 组件
+        # 因为我们即将清空 result.chain，框架的自动引用逻辑会被跳过
+        # 所以如果开启了引用，我们需要手动将其加到第一段的开头
+        if enable_reply and segments and event.message_obj.message_id:
+            # 检查第一段是否已经有 Reply (防止重复)
+            has_reply = any(isinstance(c, Reply) for c in segments[0])
+            if not has_reply:
+                reply_comp = Reply(id=event.message_obj.message_id)
+                segments[0].insert(0, reply_comp)
+
         logger.info(f"[Splitter] 将发送 {len(segments)} 个分段。")
 
-        # 6. 逐段处理与发送
+        # 7. 逐段处理与发送
         for i, segment_chain in enumerate(segments):
             if not segment_chain:
                 continue
@@ -116,7 +126,8 @@ class MessageSplitterPlugin(Star):
             except Exception as e:
                 logger.error(f"[Splitter] 发送分段失败: {e}")
 
-        # 7. 清空原始链
+        # 8. 清空原始链
+        # 这会导致框架的 ResultDecorateStage 认为没有内容可发，从而跳过后续处理（包括自动加引用）
         result.chain.clear()
 
     def _get_chain_preview(self, chain: List[BaseMessageComponent]) -> str:
@@ -167,15 +178,12 @@ class MessageSplitterPlugin(Star):
             
             # --- 富媒体组件处理 ---
             else:
-                # 获取组件类型名称 (转小写匹配配置)
                 c_type = type(component).__name__.lower()
                 
-                # 特殊处理 Reply (引用)
+                # 如果链中已经存在 Reply 组件 (可能是其他插件加的)，根据开关决定去留
                 if 'reply' in c_type:
                     if enable_reply:
-                        # 如果开启引用，将其加入当前缓冲（通常位于消息最前端）
                         current_chain_buffer.append(component)
-                    # 如果关闭引用，直接 continue (丢弃)
                     continue
 
                 # 映射到具体的策略键
@@ -185,29 +193,21 @@ class MessageSplitterPlugin(Star):
                 else: strategy = strategies['default']
 
                 if strategy == "单独":
-                    # 策略：单独成段
-                    # 1. 提交当前缓冲区
                     if current_chain_buffer:
                         segments.append(current_chain_buffer[:])
                         current_chain_buffer.clear()
-                    # 2. 提交组件本身为一段
                     segments.append([component])
                     
                 elif strategy == "跟随上段":
-                    # 策略：跟随上文
                     if current_chain_buffer:
-                        # 如果缓冲区有内容，直接追加
                         current_chain_buffer.append(component)
                     elif segments:
-                        # 如果缓冲区为空，但有前一段，追加到前一段末尾
                         segments[-1].append(component)
                     else:
-                        # 如果既无缓冲也无前段（消息开头），只能放入缓冲
                         current_chain_buffer.append(component)
                         
                 else: 
-                    # 策略：跟随下段 (跟随下文) 或 嵌入 (嵌入)
-                    # 逻辑上都是放入当前缓冲区，等待后续内容或作为新段落开头
+                    # 跟随下段 或 嵌入
                     current_chain_buffer.append(component)
 
         # 处理剩余的 buffer
