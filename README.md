@@ -67,3 +67,7 @@
 - 如果觉得自己真的不懂，可以去找AI问问之后再来说。
 - 请**务必**！务必**组织好语言**再提建议！这样对你对我都有好处，你可以很快就获得反馈甚至仓库更新，而我也可以不必浪费口舌猜你什么意思。
 
+| 1 | 2 | 3 |
+| :-- | :-- | :-- |  
+| ![1](https://github.com/nuomicici/nuomicici/blob/main/image/%E5%AE%A1%E7%BE%8E%E7%B4%AF%E8%AE%A1/1.jpg?raw=true) | ![2](https://github.com/nuomicici/nuomicici/blob/main/image/%E5%AE%A1%E7%BE%8E%E7%B4%AF%E8%AE%A1/2.jpg?raw=true) | ![3](https://github.com/nuomicici/nuomicici/blob/main/image/%E5%AE%A1%E7%BE%8E%E7%B4%AF%E8%AE%A1/3.jpg?raw=true) |
+
