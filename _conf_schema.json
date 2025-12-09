@@ -46,7 +46,7 @@
   },
   "split_scope":{
     "description": "分段内容",
-    "hint": "默认只对LLM生成内容进行分段，可选择吧插件输出也一起切了（我切我切我切！）",
+    "hint": "默认只对LLM生成内容进行分段，可选择把插件输出也一起切了（我切我切我切！）",
     "type": "string",
     "options": ["llm_only", "all"],
     "default": "llm_only"
