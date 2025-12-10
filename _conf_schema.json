@@ -16,7 +16,7 @@
     "description": "正则模式下的表达式。",
     "hint": "仅在分段模式为 regex 时生效。",
     "type": "string",
-    "default": "[。？！?!\\n…\\s]+"
+    "default": "[。？！?!\\n…]+"
   },
   "clean_regex": {
     "description": "分段后清理内容的正则表达式。",
