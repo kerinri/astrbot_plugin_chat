@@ -34,6 +34,11 @@
     "type": "int",
     "default": 0
   },
+  "relay_group_id": {
+    "description": "转发中转群号（仅开启合并转发时使用）。设置为有效群号则先把分段发到该群，再转发最近消息；0 表示不启用。",
+    "type": "int",
+    "default": 0
+  },
   "max_length_no_split":{
     "description":"分段阈值",
     "type": "int",
