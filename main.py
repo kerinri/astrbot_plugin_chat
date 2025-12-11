@@ -65,7 +65,8 @@ class MessageSplitterPlugin(Star):
         clean_pattern = self.config.get("clean_regex", "")
         smart_mode = self.config.get("enable_smart_split", True)
         max_segs = self.config.get("max_segments", 7)
-        forward_threshold = self.config.get("description", 0)
+        # 兼容新旧配置键名
+        forward_threshold = self.config.get("forward_threshold") or self.config.get("description", 0)
 
         # 5. 获取组件策略配置
         enable_reply = self.config.get("enable_reply", True)
@@ -280,10 +281,16 @@ class MessageSplitterPlugin(Star):
         if sender_name is None:
             sender_name = "AstrBot"
 
+        # 构建Node列表 - 每个segment作为一个Node
         nodes = [Node(uin=sender_uin, name=sender_name, content=seg) for seg in prepared_segments]
+        
+        logger.info(f"[Splitter] 构建合并转发消息: {len(nodes)} 个Node节点，发送者: {sender_name}({sender_uin})")
 
         mc = MessageChain()
         mc.chain = nodes
+        
+        logger.info(f"[Splitter] MessageChain包含 {len(mc.chain)} 个组件（应全为Node）")
+        
         await self.context.send_message(event.unified_msg_origin, mc)
 
     def _clean_segment_for_forward(self, segment: List[BaseMessageComponent], clean_pattern: str) -> List[BaseMessageComponent]:
