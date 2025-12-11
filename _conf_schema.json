@@ -28,8 +28,9 @@
     "type": "int",
     "default": 7
   },
-  "description": {
-    "description": "超过此分段数则使用群合并转发一次性输出（0 表示关闭）。",
+  "forward_threshold": {
+    "description": "合并转发阈值（超过此分段数则使用群合并转发一次性输出，0 表示关闭）。",
+    "hint": "设置为 5 表示消息超过 5 段时改用转发。建议值: 5-10",
     "type": "int",
     "default": 0
   },
