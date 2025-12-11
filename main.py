@@ -94,10 +94,18 @@ class MessageSplitterPlugin(Star):
                 # 优先尝试底层适配器转发（aiocqhttp 原生接口），失败再回退 chain_result
                 sent = await self._forward_via_adapter(event, segments, clean_pattern, enable_reply)
                 if sent:
+                    # 清空原始链，避免框架再次发送原文
+                    result_obj = event.get_result()
+                    if result_obj and result_obj.chain:
+                        result_obj.chain.clear()
                     logger.info(f"[Splitter] ✓ 通过 adapter 合并转发成功，段数: {len(segments)}。")
                     return
                 logger.info("[Splitter] adapter 合并转发未可用，改用 chain_result。")
-                return self._forward_via_event_chain_result(event, segments, clean_pattern, enable_reply)
+                sent = self._forward_via_event_chain_result(event, segments, clean_pattern, enable_reply)
+                if sent:
+                    logger.info(f"[Splitter] ✓ 通过 chain_result 设置合并转发，段数: {len(segments)}。")
+                    return
+                logger.warning("[Splitter] chain_result 合并转发未成功，保留原始消息。")
             except Exception as e:
                 logger.error(f"[Splitter] ✗ 合并转发构建失败: {e}", exc_info=True)
             return  # 关键:直接返回,不再执行后续逐段发送
@@ -259,8 +267,8 @@ class MessageSplitterPlugin(Star):
 
         return [seg for seg in segments if seg]
 
-    def _forward_via_event_chain_result(self, event: AstrMessageEvent, segments: List[List[BaseMessageComponent]], clean_pattern: str, enable_reply: bool):
-        """按照官方示例，使用 event.chain_result([...Node]) 触发合并转发"""
+    def _forward_via_event_chain_result(self, event: AstrMessageEvent, segments: List[List[BaseMessageComponent]], clean_pattern: str, enable_reply: bool) -> bool:
+        """通过修改 result.chain 注入 Node 列表，触发合并转发，返回是否设置成功"""
         prepared_segments: List[List[BaseMessageComponent]] = []
         for seg in segments:
             cleaned = self._clean_segment_for_forward(seg, clean_pattern)
@@ -268,7 +276,7 @@ class MessageSplitterPlugin(Star):
                 prepared_segments.append(cleaned)
 
         if not prepared_segments:
-            return
+            return False
 
         sender_uin = getattr(event.message_obj, "self_id", None) or getattr(event.message_obj, "self_uid", None) or getattr(event.message_obj, "user_id", None) or 0
         sender_name = getattr(event.message_obj, "self_name", None) or getattr(event.message_obj, "self_nickname", None)
@@ -287,9 +295,13 @@ class MessageSplitterPlugin(Star):
                 first_node_content.insert(0, Reply(id=event.message_obj.message_id))
 
         logger.info(f"[Splitter] 使用 event.chain_result 发送合并转发: {len(nodes)} 个Node，发送者: {sender_name}({sender_uin})")
+        # 直接替换 result.chain，由框架后续阶段负责发送
+        result_obj = event.get_result()
+        if result_obj is None:
+            return False
 
-        # 按官方示例调用 chain_result，传入完整的 Node 列表（非异步）
-        return event.chain_result(nodes)
+        result_obj.chain = nodes
+        return True
 
     async def _forward_via_adapter(self, event: AstrMessageEvent, segments: List[List[BaseMessageComponent]], clean_pattern: str, enable_reply: bool) -> bool:
         """优先尝试底层适配器的转发接口（例如 aiocqhttp 的 send_group_forward_msg）。返回 True 表示已发送。"""
