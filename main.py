@@ -81,16 +81,21 @@ class MessageSplitterPlugin(Star):
         # 6. 执行分段
         # 注意：此时 result.chain 中通常不包含 Reply 组件，因为框架还没加
         segments = self.split_chain_smart(result.chain, split_pattern, smart_mode, strategies, enable_reply)
+        
+        logger.info(f"[Splitter] 分段完成,共 {len(segments)} 段,转发阈值: {forward_threshold}")
 
-        # 6.5 预先检测分段总数，超限时改用群合并转发
-        if forward_threshold and len(segments) > forward_threshold:
-            logger.info(f"[Splitter] 分段数({len(segments)}) 超过转发阈值({forward_threshold})，将使用群合并转发。")
+        # 6.5 预先检测分段总数,超限时改用群合并转发
+        # 重要:此处必须提前return,避免后续逐段发送逻辑执行
+        if forward_threshold > 0 and len(segments) > forward_threshold:
+            logger.info(f"[Splitter] ⚠️ 分段数({len(segments)}) 超过转发阈值({forward_threshold}),将使用群合并转发(不逐段发送)。")
+            setattr(event, "__splitter_using_forward", True)  # 标记使用转发模式
             try:
                 await self._send_as_forward(event, segments, clean_pattern, enable_reply)
+                logger.info(f"[Splitter] ✓ 合并转发发送成功,已包含全部 {len(segments)} 段。")
             except Exception as e:
-                logger.error(f"[Splitter] 合并转发失败: {e}")
+                logger.error(f"[Splitter] ✗ 合并转发失败: {e}", exc_info=True)
             result.chain.clear()
-            return
+            return  # 关键:直接返回,不再执行后续逐段发送
 
         # 7. 最大分段数限制
         if len(segments) > max_segs and max_segs > 0:
@@ -116,7 +121,12 @@ class MessageSplitterPlugin(Star):
                 reply_comp = Reply(id=event.message_obj.message_id)
                 segments[0].insert(0, reply_comp)
 
-        logger.info(f"[Splitter] 将发送 {len(segments)} 个分段。")
+        # 安全检查:如果已使用转发模式,不应执行到此处
+        if getattr(event, "__splitter_using_forward", False):
+            logger.error(f"[Splitter] ⚠️ 逻辑错误:已使用转发模式但仍进入逐段发送,中止执行。")
+            return
+        
+        logger.info(f"[Splitter] 将逐段发送 {len(segments)} 个分段。")
 
         # 9. 逐段处理与发送
         for i, segment_chain in enumerate(segments):
