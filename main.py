@@ -363,14 +363,21 @@ class MessageSplitterPlugin(Star):
                     data = resp.get("data", {}) if isinstance(resp.get("data", {}), dict) else {}
                     msg_id = (
                         resp.get("message_id")
+                        or resp.get("msg_id")
+                        or resp.get("id")
                         or data.get("message_id")
+                        or data.get("msg_id")
+                        or data.get("id")
                         or data.get("message", {}).get("message_id")
+                        or data.get("message", {}).get("id")
                         or data.get("msg", {}).get("id")
                     )
                 else:
-                    msg_id = getattr(resp, "message_id", None) or getattr(resp, "id", None) or resp
+                    msg_id = getattr(resp, "message_id", None) or getattr(resp, "msg_id", None) or getattr(resp, "id", None) or resp
                 if msg_id:
                     message_ids.append(msg_id)
+                else:
+                    logger.warning(f"[Splitter] 中转群发送返回无 message_id，resp={resp}")
             except Exception as e:
                 logger.error(f"[Splitter] 中转群发送失败: {e}", exc_info=True)
 
