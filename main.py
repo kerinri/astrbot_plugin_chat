@@ -314,7 +314,16 @@ class MessageSplitterPlugin(Star):
 
         # 目标会话信息
         target_group_id = getattr(event, "group_id", None) or getattr(getattr(event, "message_obj", None), "group_id", None)
-        target_user_id = getattr(event, "sender_id", None) or getattr(getattr(event, "message_obj", None), "user_id", None) or getattr(getattr(event, "message_obj", None), "sender_id", None)
+        target_user_id = (
+            getattr(event, "user_id", None)
+            or getattr(event, "sender_id", None)
+            or getattr(getattr(event, "message_obj", None), "user_id", None)
+            or getattr(getattr(event, "message_obj", None), "sender_id", None)
+        )
+        if not target_user_id:
+            sender_info = getattr(getattr(event, "message_obj", None), "sender", None)
+            if isinstance(sender_info, dict):
+                target_user_id = sender_info.get("user_id") or sender_info.get("userId") or sender_info.get("id")
         can_forward_group = hasattr(client, "send_group_forward_msg")
         can_forward_private = hasattr(client, "send_private_forward_msg")
 
@@ -351,7 +360,13 @@ class MessageSplitterPlugin(Star):
                 resp = await client.send_group_msg(group_id=int(relay_group_id), message=content_text)
                 msg_id = None
                 if isinstance(resp, dict):
-                    msg_id = resp.get("message_id") or resp.get("data", {}).get("message_id")
+                    data = resp.get("data", {}) if isinstance(resp.get("data", {}), dict) else {}
+                    msg_id = (
+                        resp.get("message_id")
+                        or data.get("message_id")
+                        or data.get("message", {}).get("message_id")
+                        or data.get("msg", {}).get("id")
+                    )
                 else:
                     msg_id = getattr(resp, "message_id", None) or getattr(resp, "id", None) or resp
                 if msg_id:
