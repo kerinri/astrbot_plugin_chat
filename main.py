@@ -8,11 +8,7 @@ from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, register
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.provider import LLMResponse
-from astrbot.api.message_components import Plain, BaseMessageComponent, Image, At, Face, Reply
-
-from astrbot.api.event import filter, AstrMessageEvent
-from astrbot.api.message_components import Plain, At, Reply
-import asyncio
+from astrbot.api.message_components import Plain, BaseMessageComponent, Image, At, Face, Reply, Node
 
 class MessageSplitterPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -23,7 +19,6 @@ class MessageSplitterPlugin(Star):
             '[': ']', '{': '}'
         }
         self.quote_chars = {'"', "'", "`"}
-        self.llm_lock = asyncio.Lock()          # 全局 LLM 锁
 
     @filter.on_llm_response()
     async def on_llm_response(self, event: AstrMessageEvent, resp: LLMResponse):
@@ -59,24 +54,7 @@ class MessageSplitterPlugin(Star):
         # 标记已处理
         setattr(event, "__splitter_processed", True)
 
-        # 4. 上锁
-        # ======  Chat 独占锁 START ======
-        if self.config.get("enable_chatlock", True):
-            # 只在 LLM 响应阶段加锁
-            if getattr(event, "__is_llm_reply", False):
-                if self.llm_lock.locked():
-                    # 构造 @ 提示
-                    at_seg = [At(qq=event.get_sender_id())] if event.get_group_id() else []
-                    chain = at_seg + [Plain(" 请稍后再试")]
-                    # 立即发送并清空原链，阻止后续分段
-                    await self.context.send_message(event.unified_msg_origin, MessageChain(chain))
-                    result.chain.clear()          # 让框架不再发送
-                    return
-                # 占用锁（发送完所有段落后自动释放）
-                await self.llm_lock.acquire()
-        # ======  Chat 独占锁 END ======
-
-        # 5. 获取基础配置
+        # 4. 获取基础配置
         split_mode = self.config.get("split_mode", "regex")
         if split_mode == "simple":
             split_chars = self.config.get("split_chars", "。？！?!；;\n")
@@ -87,8 +65,9 @@ class MessageSplitterPlugin(Star):
         clean_pattern = self.config.get("clean_regex", "")
         smart_mode = self.config.get("enable_smart_split", True)
         max_segs = self.config.get("max_segments", 7)
+        forward_threshold = self.config.get("forward_threshold", 5)
 
-        # 6. 获取组件策略配置
+        # 5. 获取组件策略配置
         enable_reply = self.config.get("enable_reply", True)
 
         # 策略选项: '跟随下段', '跟随上段', '单独', '嵌入'
@@ -99,11 +78,11 @@ class MessageSplitterPlugin(Star):
             'default': self.config.get("other_media_strategy", "跟随下段")
         }
 
-        # 7. 执行分段
+        # 6. 执行分段
         # 注意：此时 result.chain 中通常不包含 Reply 组件，因为框架还没加
         segments = self.split_chain_smart(result.chain, split_pattern, smart_mode, strategies, enable_reply)
 
-        # 8. 最大分段数限制
+        # 7. 最大分段数限制
         if len(segments) > max_segs and max_segs > 0:
             logger.warning(f"[Splitter] 分段数({len(segments)}) 超过限制({max_segs})，正在合并剩余段落。")
             merged_last_segment = []
@@ -117,61 +96,123 @@ class MessageSplitterPlugin(Star):
         if len(segments) <= 1 and not clean_pattern:
             return
 
-        # 9. 手动注入 Reply 组件
-        # 因为即将清空 result.chain，框架的自动引用逻辑会被跳过
-        # 如果开启了引用，需要手动将其加到第一段的开头
-        if enable_reply and segments and event.message_obj.message_id:
-            # 检查第一段是否已经有 Reply (防止重复)
-            has_reply = any(isinstance(c, Reply) for c in segments[0])
-            if not has_reply:
-                reply_comp = Reply(id=event.message_obj.message_id)
-                segments[0].insert(0, reply_comp)
+        # 8. 检查是否需要使用转发模式
+        if len(segments) > forward_threshold:
+            logger.info(f"[Splitter] 分段数({len(segments)}) 超过转发阈值({forward_threshold})，使用合并转发模式。")
+            await self._send_forward_messages(event, segments, clean_pattern)
+        else:
+            # 9. 常规分段发送逻辑
+            # 手动注入 Reply 组件
+            # 因为即将清空 result.chain，框架的自动引用逻辑会被跳过
+            # 如果开启了引用，需要手动将其加到第一段的开头
+            if enable_reply and segments and event.message_obj.message_id:
+                # 检查第一段是否已经有 Reply (防止重复)
+                has_reply = any(isinstance(c, Reply) for c in segments[0])
+                if not has_reply:
+                    reply_comp = Reply(id=event.message_obj.message_id)
+                    segments[0].insert(0, reply_comp)
 
-        logger.info(f"[Splitter] 将发送 {len(segments)} 个分段。")
+            logger.info(f"[Splitter] 将发送 {len(segments)} 个分段。")
 
-        # 10. 逐段处理与发送
-        for i, segment_chain in enumerate(segments):
-            if not segment_chain:
-                continue
+            # 9. 逐段处理与发送
+            for i, segment_chain in enumerate(segments):
+                if not segment_chain:
+                    continue
 
-            # 应用清理正则
-            if clean_pattern:
-                for comp in segment_chain:
-                    if isinstance(comp, Plain) and comp.text:
-                        comp.text = re.sub(clean_pattern, "", comp.text)
+                # 应用清理正则
+                if clean_pattern:
+                    for comp in segment_chain:
+                        if isinstance(comp, Plain) and comp.text:
+                            comp.text = re.sub(clean_pattern, "", comp.text)
 
-            # 预览与日志
-            preview_text = self._get_chain_preview(segment_chain)
-            text_content = "".join([c.text for c in segment_chain if isinstance(c, Plain)])
-            
-            # 空内容检查
-            is_empty_text = not text_content
-            has_other_components = any(not isinstance(c, Plain) for c in segment_chain)
-            if is_empty_text and not has_other_components:
-                continue
+                # 预览与日志
+                preview_text = self._get_chain_preview(segment_chain)
+                text_content = "".join([c.text for c in segment_chain if isinstance(c, Plain)])
+                
+                # 空内容检查
+                is_empty_text = not text_content
+                has_other_components = any(not isinstance(c, Plain) for c in segment_chain)
+                if is_empty_text and not has_other_components:
+                    continue
 
-            logger.info(f"[Splitter] 发送第 {i+1}/{len(segments)} 段: {preview_text}")
+                logger.info(f"[Splitter] 发送第 {i+1}/{len(segments)} 段: {preview_text}")
 
-            try:
-                mc = MessageChain()
-                mc.chain = segment_chain
-                await self.context.send_message(event.unified_msg_origin, mc)
+                try:
+                    mc = MessageChain()
+                    mc.chain = segment_chain
+                    await self.context.send_message(event.unified_msg_origin, mc)
 
-                # 延迟逻辑
-                if i < len(segments) - 1:
-                    wait_time = self.calculate_delay(text_content)
-                    await asyncio.sleep(wait_time)
+                    # 延迟逻辑
+                    if i < len(segments) - 1:
+                        wait_time = self.calculate_delay(text_content)
+                        await asyncio.sleep(wait_time)
 
-            except Exception as e:
-                logger.error(f"[Splitter] 发送分段失败: {e}")
+                except Exception as e:
+                    logger.error(f"[Splitter] 发送分段失败: {e}")
 
-        # 11. 清空原始链
+        # 10. 清空原始链
         # 这会导致框架的 ResultDecorateStage 认为没有内容可发，从而跳过后续处理（包括自动加引用）防止重复发送
         result.chain.clear()
-        
-        # ====== 释放 LLM 锁 ======
-        if getattr(event, "__is_llm_reply", False) and self.llm_lock.locked():
-            self.llm_lock.release()
+
+    def _get_chain_preview(self, chain: List[BaseMessageComponent]) -> str:
+        parts = []
+        for comp in chain:
+            if isinstance(comp, Plain):
+                t = comp.text.replace('\n', '\\n')
+                parts.append(f"\"{t[:10]}...\"" if len(t) > 10 else f"\"{t}\"")
+            else:
+                parts.append(f"[{type(comp).__name__}]")
+        return " ".join(parts)
+
+    async def _send_forward_messages(self, event: AstrMessageEvent, segments: List[List[BaseMessageComponent]], clean_pattern: str):
+        """使用合并转发的方式发送多个分段"""
+        try:
+            # 构建 Node 列表
+            nodes = []
+            
+            # 获取机器人信息 (需要从事件中获取，这里使用一个默认的 UIN)
+            # 实际使用中应该获取真实的机器人 UIN
+            bot_uin = getattr(event, "self_id", None) or 0
+            bot_name = getattr(event, "bot_name", "AI助手")
+            
+            for i, segment_chain in enumerate(segments):
+                if not segment_chain:
+                    continue
+                
+                # 应用清理正则
+                if clean_pattern:
+                    for comp in segment_chain:
+                        if isinstance(comp, Plain) and comp.text:
+                            comp.text = re.sub(clean_pattern, "", comp.text)
+                
+                # 预览与日志
+                preview_text = self._get_chain_preview(segment_chain)
+                text_content = "".join([c.text for c in segment_chain if isinstance(c, Plain)])
+                
+                # 空内容检查
+                is_empty_text = not text_content
+                has_other_components = any(not isinstance(c, Plain) for c in segment_chain)
+                if is_empty_text and not has_other_components:
+                    continue
+                
+                logger.info(f"[Splitter] 转发段 {i+1}: {preview_text}")
+                
+                # 创建 Node 对象
+                node = Node(
+                    uin=bot_uin,
+                    name=bot_name,
+                    content=segment_chain
+                )
+                nodes.append(node)
+            
+            if nodes:
+                logger.info(f"[Splitter] 发送 {len(nodes)} 个合并转发节点。")
+                # 发送转发消息
+                await self.context.send_message(event.unified_msg_origin, nodes)
+            
+        except Exception as e:
+            logger.error(f"[Splitter] 发送转发消息失败: {e}, 降级为普通分段发送。")
+            # 降级处理：如果转发失败，改为普通分段发送
 
     def _get_chain_preview(self, chain: List[BaseMessageComponent]) -> str:
         parts = []
