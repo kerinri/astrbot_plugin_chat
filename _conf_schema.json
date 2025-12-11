@@ -118,5 +118,11 @@
     "description": "固定延迟时间(秒)。",
     "type": "float",
     "default": 1.5
+  },
+  ,
+  "enable_chatlock": {
+    "description": "是否开启 /chat 独占锁（防止多人同时调用 LLM 卡顿）",
+    "type": "bool",
+    "default": true
   }
 }
