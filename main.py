@@ -324,12 +324,24 @@ class MessageSplitterPlugin(Star):
             sender_info = getattr(getattr(event, "message_obj", None), "sender", None)
             if isinstance(sender_info, dict):
                 target_user_id = sender_info.get("user_id") or sender_info.get("userId") or sender_info.get("id")
+            else:
+                target_user_id = (
+                    getattr(sender_info, "user_id", None)
+                    or getattr(sender_info, "userId", None)
+                    or getattr(sender_info, "id", None)
+                )
         can_forward_group = hasattr(client, "send_group_forward_msg")
         can_forward_private = hasattr(client, "send_private_forward_msg")
+
+        logger.info(
+            f"[Splitter] Relay目标解析 group_id={target_group_id}, user_id={target_user_id}, "
+            f"can_forward_group={can_forward_group}, can_forward_private={can_forward_private}"
+        )
 
         if target_group_id and not can_forward_group:
             return False
         if not target_group_id and not target_user_id:
+            logger.warning("[Splitter] Relay: 无法获取目标用户ID，跳过中转群转发。")
             return False
         if not target_group_id and target_user_id and not can_forward_private:
             return False
