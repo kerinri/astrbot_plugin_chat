@@ -91,8 +91,7 @@ class MessageSplitterPlugin(Star):
             logger.info(f"[Splitter] ⚠️ 分段数({len(segments)}) 超过转发阈值({forward_threshold}),将使用群合并转发(不逐段发送)。")
             setattr(event, "__splitter_using_forward", True)  # 标记使用转发模式
             try:
-                await self._forward_via_event_chain_result(event, segments, clean_pattern, enable_reply)
-                logger.info(f"[Splitter] ✓ 已通过 event.chain_result 触发合并转发，段数: {len(segments)}。")
+                return self._forward_via_event_chain_result(event, segments, clean_pattern, enable_reply)
             except Exception as e:
                 logger.error(f"[Splitter] ✗ 合并转发构建失败: {e}", exc_info=True)
             return  # 关键:直接返回,不再执行后续逐段发送
@@ -254,7 +253,7 @@ class MessageSplitterPlugin(Star):
 
         return [seg for seg in segments if seg]
 
-    async def _forward_via_event_chain_result(self, event: AstrMessageEvent, segments: List[List[BaseMessageComponent]], clean_pattern: str, enable_reply: bool):
+    def _forward_via_event_chain_result(self, event: AstrMessageEvent, segments: List[List[BaseMessageComponent]], clean_pattern: str, enable_reply: bool):
         """按照官方示例，使用 event.chain_result([...Node]) 触发合并转发"""
         prepared_segments: List[List[BaseMessageComponent]] = []
         for seg in segments:
@@ -283,8 +282,8 @@ class MessageSplitterPlugin(Star):
 
         logger.info(f"[Splitter] 使用 event.chain_result 发送合并转发: {len(nodes)} 个Node，发送者: {sender_name}({sender_uin})")
 
-        # 按官方示例调用 chain_result，传入完整的 Node 列表
-        await event.chain_result(nodes)
+        # 按官方示例调用 chain_result，传入完整的 Node 列表（非异步）
+        return event.chain_result(nodes)
 
     async def _send_as_forward(self, event: AstrMessageEvent, segments: List[List[BaseMessageComponent]], clean_pattern: str, enable_reply: bool):
         # 先整理并清洗段落内容
