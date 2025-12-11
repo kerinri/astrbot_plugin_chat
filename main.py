@@ -284,58 +284,17 @@ class MessageSplitterPlugin(Star):
         
         logger.info(f"[Splitter] 构建Node列表: {len(nodes)} 个节点，发送者: {sender_name}({sender_uin})")
 
-        # 关键：清空原chain并设置为Node列表，让框架处理合并转发
-        result.chain.clear()
-        result.chain.extend(nodes)
-        
         # 如果需要回复引用，添加到第一个Node的content开头
         if enable_reply and event.message_obj.message_id and nodes:
             first_node_content = nodes[0].content
             if not any(isinstance(c, Reply) for c in first_node_content):
                 first_node_content.insert(0, Reply(id=event.message_obj.message_id))
-
-    async def _send_as_forward(self, event: AstrMessageEvent, segments: List[List[BaseMessageComponent]], clean_pattern: str, enable_reply: bool):
-        # 先整理并清洗段落内容
-        prepared_segments: List[List[BaseMessageComponent]] = []
-        for seg in segments:
-            cleaned = self._clean_segment_for_forward(seg, clean_pattern)
-            if cleaned:
-                prepared_segments.append(cleaned)
-
-        if not prepared_segments:
-            return
-
-        # 保留引用
-        if enable_reply and event.message_obj.message_id:
-            first_seg = prepared_segments[0]
-            if not any(isinstance(c, Reply) for c in first_seg):
-                first_seg.insert(0, Reply(id=event.message_obj.message_id))
-
-        sender_uin = getattr(event.message_obj, "self_id", None) or getattr(event.message_obj, "self_uid", None) or getattr(event.message_obj, "user_id", None) or 0
-        sender_name = getattr(event.message_obj, "self_name", None) or getattr(event.message_obj, "self_nickname", None)
-        if sender_name is None:
-            sender = getattr(event.message_obj, "sender", None)
-            if isinstance(sender, dict):
-                sender_name = sender.get("nickname") or sender.get("card")
-        if sender_name is None:
-            sender_name = "AstrBot"
-
-        # 构建Node列表 - 每个segment作为一个Node
-        nodes = [Node(uin=sender_uin, name=sender_name, content=seg) for seg in prepared_segments]
         
-        logger.info(f"[Splitter] 构建合并转发消息: {len(nodes)} 个Node节点，发送者: {sender_name}({sender_uin})")
-
-        # 方式1: 尝试直接通过result发送（推荐）
-        result = event.get_result()
-        if result:
-            result.chain = nodes
-            logger.info(f"[Splitter] 通过result.chain发送 {len(nodes)} 个Node节点")
-        else:
-            # 方式2: 如果result不可用，回退到context.send_message
-            mc = MessageChain()
-            mc.chain = nodes
-            logger.info(f"[Splitter] 通过MessageChain发送 {len(mc.chain)} 个组件")
-            await self.context.send_message(event.unified_msg_origin, mc)
+        # 关键：清空原chain并设置为Node列表，让框架处理合并转发
+        result.chain.clear()
+        result.chain.extend(nodes)
+        
+        logger.info(f"[Splitter] result.chain已设置为 {len(result.chain)} 个Node，等待框架发送")
 
     def _clean_segment_for_forward(self, segment: List[BaseMessageComponent], clean_pattern: str) -> List[BaseMessageComponent]:
         cleaned: List[BaseMessageComponent] = []
