@@ -33,6 +33,12 @@
     "type": "int",
     "default": 0
   },
+  "forward_threshold": {
+    "description": "合并转发阈值。当分段数超过此值时，使用合并转发的方式发送消息。",
+    "hint": "设置为5表示分段数超过5条时使用转发模式。设置为0禁用转发功能。",
+    "type": "int",
+    "default": 5
+  },
   "enable_smart_split": {
     "description": "是否开启智能识别(忽略引号内标点)。",
     "type": "bool",
@@ -118,18 +124,5 @@
     "description": "固定延迟时间(秒)。",
     "type": "float",
     "default": 1.5
-  },
-  "node_threshold": {
-    "description": "≥ 该段数时自动改用 QQ 合并转发（OneBot v11 有效）",
-    "type": "int",
-    "default": 5,
-    "min": 2,
-    "max": 50
-  },
-  "enable_node_forward": {
-    "description": "是否启用合并转发（关闭则回退到截断合并）",
-    "type": "bool",
-    "default": true
   }
-}
 }
