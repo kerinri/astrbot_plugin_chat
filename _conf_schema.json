@@ -119,9 +119,17 @@
     "type": "float",
     "default": 1.5
   },
-  "enable_chatlock": {
-    "description": "是否开启 /chat 独占锁（防止多人同时调用 LLM 卡顿）",
+  "node_threshold": {
+    "description": "≥ 该段数时自动改用 QQ 合并转发（OneBot v11 有效）",
+    "type": "int",
+    "default": 5,
+    "min": 2,
+    "max": 50
+  },
+  "enable_node_forward": {
+    "description": "是否启用合并转发（关闭则回退到截断合并）",
     "type": "bool",
     "default": true
   }
+}
 }
