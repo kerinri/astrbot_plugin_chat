@@ -91,6 +91,12 @@ class MessageSplitterPlugin(Star):
             logger.info(f"[Splitter] ⚠️ 分段数({len(segments)}) 超过转发阈值({forward_threshold}),将使用群合并转发(不逐段发送)。")
             setattr(event, "__splitter_using_forward", True)  # 标记使用转发模式
             try:
+                # 优先尝试底层适配器转发（aiocqhttp 原生接口），失败再回退 chain_result
+                sent = await self._forward_via_adapter(event, segments, clean_pattern, enable_reply)
+                if sent:
+                    logger.info(f"[Splitter] ✓ 通过 adapter 合并转发成功，段数: {len(segments)}。")
+                    return
+                logger.info("[Splitter] adapter 合并转发未可用，改用 chain_result。")
                 return self._forward_via_event_chain_result(event, segments, clean_pattern, enable_reply)
             except Exception as e:
                 logger.error(f"[Splitter] ✗ 合并转发构建失败: {e}", exc_info=True)
@@ -284,6 +290,91 @@ class MessageSplitterPlugin(Star):
 
         # 按官方示例调用 chain_result，传入完整的 Node 列表（非异步）
         return event.chain_result(nodes)
+
+    async def _forward_via_adapter(self, event: AstrMessageEvent, segments: List[List[BaseMessageComponent]], clean_pattern: str, enable_reply: bool) -> bool:
+        """优先尝试底层适配器的转发接口（例如 aiocqhttp 的 send_group_forward_msg）。返回 True 表示已发送。"""
+        client = getattr(event, "bot", None)
+        if not client:
+            return False
+
+        can_group = hasattr(client, "send_group_forward_msg")
+        can_private = hasattr(client, "send_private_forward_msg")
+        if not (can_group or can_private):
+            return False
+
+        prepared_segments: List[List[BaseMessageComponent]] = []
+        for seg in segments:
+            cleaned = self._clean_segment_for_forward(seg, clean_pattern)
+            if cleaned:
+                prepared_segments.append(cleaned)
+
+        if not prepared_segments:
+            return True  # 无内容可发，但不再重试
+
+        sender_uin = getattr(event.message_obj, "self_id", None) or getattr(event.message_obj, "self_uid", None) or getattr(event.message_obj, "user_id", None) or 0
+        sender_name = getattr(event.message_obj, "self_name", None) or getattr(event.message_obj, "self_nickname", None)
+        if sender_name is None:
+            sender = getattr(event.message_obj, "sender", None)
+            if isinstance(sender, dict):
+                sender_name = sender.get("nickname") or sender.get("card")
+        if sender_name is None:
+            sender_name = "AstrBot"
+
+        # 如果需要回复引用，添加到第一段的前缀文本
+        if enable_reply and event.message_obj.message_id and prepared_segments:
+            prefix = f"[reply:{event.message_obj.message_id}] "
+            first_seg = prepared_segments[0]
+            # 尽量在第一个 Plain 前加前缀，否则追加一个 Plain
+            inserted = False
+            for comp in first_seg:
+                if isinstance(comp, Plain):
+                    comp.text = prefix + comp.text
+                    inserted = True
+                    break
+            if not inserted:
+                first_seg.insert(0, Plain(prefix))
+
+        # 将段落转换为 OneBot forward node 结构
+        nodes = []
+        for seg in prepared_segments:
+            text_parts = []
+            for comp in seg:
+                if isinstance(comp, Plain):
+                    text_parts.append(comp.text)
+                else:
+                    # 简单标记非文本组件，避免丢失提示
+                    text_parts.append(f"[{type(comp).__name__}]")
+            content_text = "".join(text_parts).strip()
+            if not content_text:
+                continue
+            nodes.append({
+                "type": "node",
+                "data": {
+                    "name": sender_name,
+                    "uin": int(sender_uin) if sender_uin else 0,
+                    "content": content_text,
+                }
+            })
+
+        if not nodes:
+            return True
+
+        # 目标会话（优先群）
+        group_id = getattr(event, "group_id", None) or getattr(getattr(event, "message_obj", None), "group_id", None)
+        user_id = getattr(event, "sender_id", None) or getattr(getattr(event, "message_obj", None), "user_id", None) or getattr(getattr(event, "message_obj", None), "sender_id", None)
+
+        try:
+            if group_id and can_group:
+                await client.send_group_forward_msg(group_id=int(group_id), messages=nodes)
+                return True
+            if user_id and can_private:
+                await client.send_private_forward_msg(user_id=int(user_id), messages=nodes)
+                return True
+        except Exception as e:
+            logger.error(f"[Splitter] adapter 转发失败: {e}", exc_info=True)
+            return False
+
+        return False
 
     async def _send_as_forward(self, event: AstrMessageEvent, segments: List[List[BaseMessageComponent]], clean_pattern: str, enable_reply: bool):
         # 先整理并清洗段落内容
