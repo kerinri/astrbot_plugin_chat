@@ -1,1 +1,2 @@
 基于astrbot_plugin_splitter插件进行的一些个人修改，请查询原作者文件
+https://github.com/nuomicici/astrbot_plugin_splitter
