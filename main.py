@@ -425,6 +425,9 @@ class MessageSplitterPlugin(Star):
             elif isinstance(comp, Image):
                 file_val = getattr(comp, "file", None) or getattr(comp, "path", None)
                 url_val = getattr(comp, "url", None)
+                # 兼容 file:// 前缀
+                if isinstance(file_val, str) and file_val.startswith("file://"):
+                    file_val = file_val[7:]
                 if url_val:
                     ob.append({"type": "image", "data": {"file": url_val}})
                 elif file_val and os.path.exists(file_val):
