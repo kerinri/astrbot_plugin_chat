@@ -358,18 +358,22 @@ class MessageSplitterPlugin(Star):
 
         message_ids = []
         for seg in prepared_segments:
-            text_parts = []
-            for comp in seg:
-                if isinstance(comp, Plain):
-                    text_parts.append(comp.text)
-                else:
-                    text_parts.append(f"[{type(comp).__name__}]")
-            content_text = "".join(text_parts).strip()
-            if not content_text:
-                continue
-
             try:
-                resp = await client.send_group_msg(group_id=int(relay_group_id), message=content_text)
+                ob_segments = self._to_onebot_segments(seg)
+                if ob_segments:
+                    resp = await client.send_group_msg(group_id=int(relay_group_id), message=ob_segments)
+                else:
+                    # 退化为纯文本
+                    text_parts = []
+                    for comp in seg:
+                        if isinstance(comp, Plain):
+                            text_parts.append(comp.text)
+                        else:
+                            text_parts.append(f"[{type(comp).__name__}]")
+                    content_text = "".join(text_parts).strip()
+                    if not content_text:
+                        continue
+                    resp = await client.send_group_msg(group_id=int(relay_group_id), message=content_text)
                 msg_id = None
                 if isinstance(resp, dict):
                     data = resp.get("data", {}) if isinstance(resp.get("data", {}), dict) else {}
@@ -410,6 +414,40 @@ class MessageSplitterPlugin(Star):
             return False
 
         return False
+
+    def _to_onebot_segments(self, seg: List[BaseMessageComponent]):
+        """将内部组件转换为 OneBot V11 段列表，尽量保留图片/at/表情/回复等。"""
+        ob: List[Dict] = []
+        for comp in seg:
+            if isinstance(comp, Plain):
+                ob.append({"type": "text", "data": {"text": comp.text}})
+            elif isinstance(comp, Image):
+                file_val = getattr(comp, "file", None) or getattr(comp, "url", None) or getattr(comp, "path", None)
+                if file_val:
+                    ob.append({"type": "image", "data": {"file": file_val}})
+                else:
+                    ob.append({"type": "text", "data": {"text": "[Image]"}})
+            elif isinstance(comp, At):
+                qq_val = getattr(comp, "qq", None) or getattr(comp, "id", None) or getattr(comp, "user_id", None)
+                if qq_val is None:
+                    ob.append({"type": "text", "data": {"text": "[At]"}})
+                else:
+                    ob.append({"type": "at", "data": {"qq": qq_val}})
+            elif isinstance(comp, Face):
+                face_id = getattr(comp, "face_id", None) or getattr(comp, "id", None) or getattr(comp, "code", None)
+                if face_id is None:
+                    ob.append({"type": "text", "data": {"text": "[Face]"}})
+                else:
+                    ob.append({"type": "face", "data": {"id": face_id}})
+            elif isinstance(comp, Reply):
+                reply_id = getattr(comp, "id", None) or getattr(comp, "message_id", None)
+                if reply_id is None:
+                    ob.append({"type": "text", "data": {"text": "[Reply]"}})
+                else:
+                    ob.append({"type": "reply", "data": {"id": reply_id}})
+            else:
+                ob.append({"type": "text", "data": {"text": f"[{type(comp).__name__}]"}})
+        return ob
 
     async def _send_as_forward(self, event: AstrMessageEvent, segments: List[List[BaseMessageComponent]], clean_pattern: str, enable_reply: bool):
         # 先整理并清洗段落内容
