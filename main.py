@@ -308,9 +308,9 @@ class MessageSplitterPlugin(Star):
         return True
 
     async def _forward_via_relay_group(self, event: AstrMessageEvent, segments: List[List[BaseMessageComponent]], clean_pattern: str, relay_group_id: int) -> bool:
-        """将分段先发送到中转群，再把这些消息作为聊天记录合并转发到目标会话。"""
+        """将分段用框架发送到中转群（自动处理图片等），再把这些消息作为聊天记录合并转发到目标会话。"""
         client = getattr(event, "bot", None)
-        if not client or not hasattr(client, "send_group_msg"):
+        if not client:
             return False
 
         # 目标会话信息
@@ -347,7 +347,7 @@ class MessageSplitterPlugin(Star):
         if not target_group_id and target_user_id and not can_forward_private:
             return False
 
-        # 清洗并发送到中转群，收集 message_id
+        # 清洗并用框架发送到中转群，收集 message_id
         prepared_segments: List[List[BaseMessageComponent]] = []
         for seg in segments:
             cleaned = self._clean_segment_for_forward(seg, clean_pattern)
@@ -357,50 +357,68 @@ class MessageSplitterPlugin(Star):
         if not prepared_segments:
             return False
 
-        message_ids = []
-        for seg in prepared_segments:
-            try:
-                ob_segments = self._to_onebot_segments(seg)
-                if ob_segments:
-                    resp = await client.send_group_msg(group_id=int(relay_group_id), message=ob_segments)
-                else:
-                    # 退化为纯文本
-                    text_parts = []
-                    for comp in seg:
-                        if isinstance(comp, Plain):
-                            text_parts.append(comp.text)
-                        else:
-                            text_parts.append(f"[{type(comp).__name__}]")
-                    content_text = "".join(text_parts).strip()
-                    if not content_text:
-                        continue
-                    resp = await client.send_group_msg(group_id=int(relay_group_id), message=content_text)
-                msg_id = None
-                if isinstance(resp, dict):
-                    data = resp.get("data", {}) if isinstance(resp.get("data", {}), dict) else {}
-                    msg_id = (
-                        resp.get("message_id")
-                        or resp.get("msg_id")
-                        or resp.get("id")
-                        or data.get("message_id")
-                        or data.get("msg_id")
-                        or data.get("id")
-                        or data.get("message", {}).get("message_id")
-                        or data.get("message", {}).get("id")
-                        or data.get("msg", {}).get("id")
-                    )
-                else:
-                    msg_id = getattr(resp, "message_id", None) or getattr(resp, "msg_id", None) or getattr(resp, "id", None) or resp
-                if msg_id:
-                    message_ids.append(msg_id)
-                else:
-                    logger.warning(f"[Splitter] 中转群发送返回无 message_id，resp={resp}")
-            except Exception as e:
-                logger.error(f"[Splitter] 中转群发送失败: {e}", exc_info=True)
-
-        if not message_ids:
+        # 构造指向中转群的 origin
+        try:
+            relay_origin = event.unified_msg_origin
+            # 尝试复制并修改属性指向中转群
+            if hasattr(relay_origin, "__dict__"):
+                relay_origin = type(relay_origin).__new__(type(relay_origin))
+                relay_origin.__dict__.update(event.unified_msg_origin.__dict__)
+            # 修改 group_id 为中转群
+            if hasattr(relay_origin, "group_id"):
+                relay_origin.group_id = str(relay_group_id)
+            elif hasattr(relay_origin, "_group_id"):
+                relay_origin._group_id = str(relay_group_id)
+            # 清除 user_id 以确保发到群而非私聊
+            if hasattr(relay_origin, "user_id"):
+                relay_origin.user_id = None
+            elif hasattr(relay_origin, "_user_id"):
+                relay_origin._user_id = None
+        except Exception as e:
+            logger.error(f"[Splitter] 构造中转群 origin 失败: {e}", exc_info=True)
             return False
 
+        message_ids = []
+        for i, seg in enumerate(prepared_segments):
+            try:
+                mc = MessageChain()
+                mc.chain = seg
+                # 用框架发送，自动处理图片等组件
+                result = await self.context.send_message(relay_origin, mc)
+                # 尝试从返回值获取 message_id
+                msg_id = None
+                if result:
+                    if isinstance(result, dict):
+                        data = result.get("data", {}) if isinstance(result.get("data", {}), dict) else {}
+                        msg_id = (
+                            result.get("message_id")
+                            or result.get("msg_id")
+                            or result.get("id")
+                            or data.get("message_id")
+                            or data.get("msg_id")
+                            or data.get("id")
+                        )
+                    else:
+                        msg_id = getattr(result, "message_id", None) or getattr(result, "msg_id", None) or getattr(result, "id", None) or result
+                
+                if msg_id:
+                    message_ids.append(msg_id)
+                    logger.debug(f"[Splitter] 中转群发送第 {i+1}/{len(prepared_segments)} 段成功，msg_id={msg_id}")
+                else:
+                    logger.warning(f"[Splitter] 中转群发送第 {i+1}/{len(prepared_segments)} 段成功但无法获取 message_id")
+                
+                # 短暂延迟避免发送过快
+                if i < len(prepared_segments) - 1:
+                    await asyncio.sleep(0.1)
+                    
+            except Exception as e:
+                logger.error(f"[Splitter] 中转群发送第 {i+1}/{len(prepared_segments)} 段失败: {e}", exc_info=True)
+
+        if not message_ids:
+            logger.warning("[Splitter] 中转群发送完成但未收集到任何 message_id，无法转发。")
+            return False
+
+        logger.info(f"[Splitter] 成功向中转群发送 {len(message_ids)} 条消息，准备转发。")
         nodes = [{"type": "node", "data": {"id": mid}} for mid in message_ids]
 
         try:
