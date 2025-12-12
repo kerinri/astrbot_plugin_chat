@@ -425,16 +425,22 @@ class MessageSplitterPlugin(Star):
             elif isinstance(comp, Image):
                 file_val = getattr(comp, "file", None) or getattr(comp, "path", None)
                 url_val = getattr(comp, "url", None)
+                file_val = file_val.strip() if isinstance(file_val, str) else file_val
                 # 兼容 file:// 前缀
                 if isinstance(file_val, str) and file_val.startswith("file://"):
                     file_val = file_val[7:]
+
                 if url_val:
                     ob.append({"type": "image", "data": {"file": url_val}})
-                elif file_val and os.path.exists(file_val):
-                    ob.append({"type": "image", "data": {"file": file_val}})
                 elif file_val:
-                    logger.warning(f"[Splitter] Image file not found, fallback to placeholder: {file_val}")
-                    ob.append({"type": "text", "data": {"text": "[Image]"}})
+                    if os.path.exists(file_val):
+                        uri = file_val
+                        if not uri.startswith("file://"):
+                            uri = f"file://{uri}" if uri.startswith("/") else f"file:///{uri}"
+                        ob.append({"type": "image", "data": {"file": uri}})
+                    else:
+                        logger.warning(f"[Splitter] Image file not found, fallback to placeholder: {file_val}")
+                        ob.append({"type": "text", "data": {"text": "[Image]"}})
                 else:
                     ob.append({"type": "text", "data": {"text": "[Image]"}})
             elif isinstance(comp, At):
