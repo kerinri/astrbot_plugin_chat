@@ -1,4 +1,3 @@
-import os
 import re
 import math
 import random
@@ -308,9 +307,9 @@ class MessageSplitterPlugin(Star):
         return True
 
     async def _forward_via_relay_group(self, event: AstrMessageEvent, segments: List[List[BaseMessageComponent]], clean_pattern: str, relay_group_id: int) -> bool:
-        """将分段用框架发送到中转群（自动处理图片等），再把这些消息作为聊天记录合并转发到目标会话。"""
+        """将分段先发送到中转群，再把这些消息作为聊天记录合并转发到目标会话。"""
         client = getattr(event, "bot", None)
-        if not client:
+        if not client or not hasattr(client, "send_group_msg"):
             return False
 
         # 目标会话信息
@@ -347,7 +346,7 @@ class MessageSplitterPlugin(Star):
         if not target_group_id and target_user_id and not can_forward_private:
             return False
 
-        # 清洗并用框架发送到中转群，收集 message_id
+        # 清洗并发送到中转群，收集 message_id
         prepared_segments: List[List[BaseMessageComponent]] = []
         for seg in segments:
             cleaned = self._clean_segment_for_forward(seg, clean_pattern)
@@ -357,68 +356,46 @@ class MessageSplitterPlugin(Star):
         if not prepared_segments:
             return False
 
-        # 构造指向中转群的 origin
-        try:
-            relay_origin = event.unified_msg_origin
-            # 尝试复制并修改属性指向中转群
-            if hasattr(relay_origin, "__dict__"):
-                relay_origin = type(relay_origin).__new__(type(relay_origin))
-                relay_origin.__dict__.update(event.unified_msg_origin.__dict__)
-            # 修改 group_id 为中转群
-            if hasattr(relay_origin, "group_id"):
-                relay_origin.group_id = str(relay_group_id)
-            elif hasattr(relay_origin, "_group_id"):
-                relay_origin._group_id = str(relay_group_id)
-            # 清除 user_id 以确保发到群而非私聊
-            if hasattr(relay_origin, "user_id"):
-                relay_origin.user_id = None
-            elif hasattr(relay_origin, "_user_id"):
-                relay_origin._user_id = None
-        except Exception as e:
-            logger.error(f"[Splitter] 构造中转群 origin 失败: {e}", exc_info=True)
-            return False
-
         message_ids = []
-        for i, seg in enumerate(prepared_segments):
+        for seg in prepared_segments:
+            text_parts = []
+            for comp in seg:
+                if isinstance(comp, Plain):
+                    text_parts.append(comp.text)
+                else:
+                    text_parts.append(f"[{type(comp).__name__}]")
+            content_text = "".join(text_parts).strip()
+            if not content_text:
+                continue
+
             try:
-                mc = MessageChain()
-                mc.chain = seg
-                # 用框架发送，自动处理图片等组件
-                result = await self.context.send_message(relay_origin, mc)
-                # 尝试从返回值获取 message_id
+                resp = await client.send_group_msg(group_id=int(relay_group_id), message=content_text)
                 msg_id = None
-                if result:
-                    if isinstance(result, dict):
-                        data = result.get("data", {}) if isinstance(result.get("data", {}), dict) else {}
-                        msg_id = (
-                            result.get("message_id")
-                            or result.get("msg_id")
-                            or result.get("id")
-                            or data.get("message_id")
-                            or data.get("msg_id")
-                            or data.get("id")
-                        )
-                    else:
-                        msg_id = getattr(result, "message_id", None) or getattr(result, "msg_id", None) or getattr(result, "id", None) or result
-                
+                if isinstance(resp, dict):
+                    data = resp.get("data", {}) if isinstance(resp.get("data", {}), dict) else {}
+                    msg_id = (
+                        resp.get("message_id")
+                        or resp.get("msg_id")
+                        or resp.get("id")
+                        or data.get("message_id")
+                        or data.get("msg_id")
+                        or data.get("id")
+                        or data.get("message", {}).get("message_id")
+                        or data.get("message", {}).get("id")
+                        or data.get("msg", {}).get("id")
+                    )
+                else:
+                    msg_id = getattr(resp, "message_id", None) or getattr(resp, "msg_id", None) or getattr(resp, "id", None) or resp
                 if msg_id:
                     message_ids.append(msg_id)
-                    logger.debug(f"[Splitter] 中转群发送第 {i+1}/{len(prepared_segments)} 段成功，msg_id={msg_id}")
                 else:
-                    logger.warning(f"[Splitter] 中转群发送第 {i+1}/{len(prepared_segments)} 段成功但无法获取 message_id")
-                
-                # 短暂延迟避免发送过快
-                if i < len(prepared_segments) - 1:
-                    await asyncio.sleep(0.1)
-                    
+                    logger.warning(f"[Splitter] 中转群发送返回无 message_id，resp={resp}")
             except Exception as e:
-                logger.error(f"[Splitter] 中转群发送第 {i+1}/{len(prepared_segments)} 段失败: {e}", exc_info=True)
+                logger.error(f"[Splitter] 中转群发送失败: {e}", exc_info=True)
 
         if not message_ids:
-            logger.warning("[Splitter] 中转群发送完成但未收集到任何 message_id，无法转发。")
             return False
 
-        logger.info(f"[Splitter] 成功向中转群发送 {len(message_ids)} 条消息，准备转发。")
         nodes = [{"type": "node", "data": {"id": mid}} for mid in message_ids]
 
         try:
@@ -433,55 +410,6 @@ class MessageSplitterPlugin(Star):
             return False
 
         return False
-
-    def _to_onebot_segments(self, seg: List[BaseMessageComponent]):
-        """将内部组件转换为 OneBot V11 段列表，尽量保留图片/at/表情/回复等。"""
-        ob: List[Dict] = []
-        for comp in seg:
-            if isinstance(comp, Plain):
-                ob.append({"type": "text", "data": {"text": comp.text}})
-            elif isinstance(comp, Image):
-                file_val = getattr(comp, "file", None) or getattr(comp, "path", None)
-                url_val = getattr(comp, "url", None)
-                file_val = file_val.strip() if isinstance(file_val, str) else file_val
-                # 兼容 file:// 前缀
-                if isinstance(file_val, str) and file_val.startswith("file://"):
-                    file_val = file_val[7:]
-
-                if url_val:
-                    ob.append({"type": "image", "data": {"file": url_val}})
-                elif file_val:
-                    if os.path.exists(file_val):
-                        uri = file_val
-                        if not uri.startswith("file://"):
-                            uri = f"file://{uri}" if uri.startswith("/") else f"file:///{uri}"
-                        ob.append({"type": "image", "data": {"file": uri}})
-                    else:
-                        logger.warning(f"[Splitter] Image file not found, fallback to placeholder: {file_val}")
-                        ob.append({"type": "text", "data": {"text": "[Image]"}})
-                else:
-                    ob.append({"type": "text", "data": {"text": "[Image]"}})
-            elif isinstance(comp, At):
-                qq_val = getattr(comp, "qq", None) or getattr(comp, "id", None) or getattr(comp, "user_id", None)
-                if qq_val is None:
-                    ob.append({"type": "text", "data": {"text": "[At]"}})
-                else:
-                    ob.append({"type": "at", "data": {"qq": qq_val}})
-            elif isinstance(comp, Face):
-                face_id = getattr(comp, "face_id", None) or getattr(comp, "id", None) or getattr(comp, "code", None)
-                if face_id is None:
-                    ob.append({"type": "text", "data": {"text": "[Face]"}})
-                else:
-                    ob.append({"type": "face", "data": {"id": face_id}})
-            elif isinstance(comp, Reply):
-                reply_id = getattr(comp, "id", None) or getattr(comp, "message_id", None)
-                if reply_id is None:
-                    ob.append({"type": "text", "data": {"text": "[Reply]"}})
-                else:
-                    ob.append({"type": "reply", "data": {"id": reply_id}})
-            else:
-                ob.append({"type": "text", "data": {"text": f"[{type(comp).__name__}]"}})
-        return ob
 
     async def _send_as_forward(self, event: AstrMessageEvent, segments: List[List[BaseMessageComponent]], clean_pattern: str, enable_reply: bool):
         # 先整理并清洗段落内容
