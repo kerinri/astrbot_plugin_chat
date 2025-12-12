@@ -358,14 +358,22 @@ class MessageSplitterPlugin(Star):
 
         message_ids = []
         for seg in prepared_segments:
+            # 过滤掉 Image 等富媒体组件，只保留纯文本
             text_parts = []
+            has_image = False
             for comp in seg:
                 if isinstance(comp, Plain):
                     text_parts.append(comp.text)
-                else:
-                    text_parts.append(f"[{type(comp).__name__}]")
+                elif isinstance(comp, Image):
+                    has_image = True
+                    # 图片组件直接跳过，不添加占位符
+                # 其他组件也可以选择性保留或跳过
+            
             content_text = "".join(text_parts).strip()
+            # 如果段落只有图片没有文本，直接跳过整段
             if not content_text:
+                if has_image:
+                    logger.debug(f"[Splitter] 跳过纯图片段落（中转群不支持）")
                 continue
 
             try:
