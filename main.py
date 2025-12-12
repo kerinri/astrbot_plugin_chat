@@ -1,3 +1,4 @@
+import os
 import re
 import math
 import random
@@ -422,9 +423,15 @@ class MessageSplitterPlugin(Star):
             if isinstance(comp, Plain):
                 ob.append({"type": "text", "data": {"text": comp.text}})
             elif isinstance(comp, Image):
-                file_val = getattr(comp, "file", None) or getattr(comp, "url", None) or getattr(comp, "path", None)
-                if file_val:
+                file_val = getattr(comp, "file", None) or getattr(comp, "path", None)
+                url_val = getattr(comp, "url", None)
+                if url_val:
+                    ob.append({"type": "image", "data": {"file": url_val}})
+                elif file_val and os.path.exists(file_val):
                     ob.append({"type": "image", "data": {"file": file_val}})
+                elif file_val:
+                    logger.warning(f"[Splitter] Image file not found, fallback to placeholder: {file_val}")
+                    ob.append({"type": "text", "data": {"text": "[Image]"}})
                 else:
                     ob.append({"type": "text", "data": {"text": "[Image]"}})
             elif isinstance(comp, At):
